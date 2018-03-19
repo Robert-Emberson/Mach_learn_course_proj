@@ -1,0 +1,120 @@
+---
+title: "Fitness Tracker Modelling Course Project"
+author: "Robert Emberson"
+date: "18 March 2018"
+output: html_document
+---
+## Introduction
+In this project, the aim is to establish an effective predictive method for the 
+activity dataset provided as part of the class. Essentially, the data consists 
+of a large number of variable measurements from fitness trackers from 6 
+individuals, carrying out a number of repetitions of dumb-bell lifting. The
+participants were instructed to carry out the activities in 5 different ways - 
+one correct form (A) and 4 other approaches that were in some specific way 
+incorrect. From the website describing the data: 
+
+throwing the elbows to the front (Class B), lifting the dumbbell only halfway 
+(Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to
+the front (Class E). 
+
+First, the appropriate packages are loaded: ggplot2, reshape2, caret, rattle,
+and dplyr.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+require(ggplot2)
+require(reshape2)
+require(caret)
+require(rattle)
+require(dplyr)
+```
+
+### Initial processing
+The first step is to download and clean up the data.
+
+```{r download, cache=TRUE}
+dir <- getwd()
+url <- 'https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv'
+download.file(url, paste(dir, '/Training_data.csv', sep = ''))
+dat <- read.csv('Training_data.csv')
+```
+
+There are a large number of observations, spread across 6 participants and 10 
+repetitions each (according to the data description). Many of the measurements
+are clearly similar just from initial observation.
+It would be extremely computationally intensive to model the outcome based 
+on all of the observations, so I have made two decisions:
+
+1. Remove all variables that are incomplete (contain null values, or N/A values)
+
+2. Take the average of the observations for the remaining 52 variables for each
+'numbered window'. This gives 858 averaged observations. Although I don't have
+explicit confirmation that these represent different repetitions (since there
+is no data description file), it simplifies the analysis, and doesn't impede the
+predictive ability. This assumption could be questioned in review, of course.
+
+``` {r clean_data, cache=TRUE}
+set.seed(123)
+dat1 <- select_if(dat, function(col){!is.factor(col) && all(is.finite(col))})
+init <- dat1 %>% group_by(as.factor(num_window)) %>% summarise_all(funs(mean))
+dummy <- dat %>% group_by(as.factor(num_window)) %>% 
+        summarise(class2 = head(classe, 1))
+init <- cbind(init, dummy[,2])
+```
+
+Next, I split this 'training' data itself into a training and test set, so that 
+the out-of-sample error rate can be estimated. 
+
+``` {r partition}
+inTrain <- createDataPartition(y = init$class2, p =0.7, list = FALSE)
+training <- init[inTrain, ]
+testing <- init[-inTrain, ]
+```
+
+### Model 1 - Tree
+Since the outcome to be predicted is a factor, I'm first using a tree model, 
+which should give some idea of the initial predictive ability. I show both the 
+initially generated model, and the confusion matrix estimate for predictions on 
+the 'test' partition - i.e. the out-of-sample error
+
+``` {r tree}
+variables <- training[,6:58]
+mod1 <- train(class2 ~ ., data = variables, method = 'rpart')
+fancyRpartPlot(mod1$finalModel)
+
+
+test_variables <- testing[,6:58]
+testimates <- predict(mod1, test_variables)
+confusionMatrix(testimates, test_variables$class2)$overall[1]
+```
+
+It seems like the accuracy of this model is pretty low, around 0.5. 
+Let's try a random forest, and a boosted decision tree, to see if this can be
+improved.
+
+``` {r randfor, cache=TRUE}
+mod2 <- train(class2 ~ ., data = variables, method = 'rf')
+
+testimates2 <- predict(mod2, test_variables)
+confusionMatrix(testimates2, test_variables$class2)
+```
+
+So this is much better - accuracy rate of 0.87. Can we do any better with a 
+relatively simple model? Let's try a boosted tree model.
+
+``` {r boosted_t, cache=TRUE}
+irrel <- capture.output(mod3 <- train(class2 ~ ., data = variables, method = 'gbm'))
+
+testimates3 <- predict(mod3, test_variables)
+a <- confusionMatrix(testimates3, test_variables$class2)
+aa <- melt(a$table)
+ggplot(data = aa, aes(x=Prediction, y=Reference, fill=value)) + 
+        geom_tile(aes(fill = value), colour = "white") +
+        scale_fill_gradient(low = 'white', high = 'blue') + 
+        geom_text(aes(label = sprintf("%1.0f", value)), vjust = 1)
+a$overall[1]
+```
+
+So this third model offers a reasonable out-of-sample error rate (~0.89), and is 
+not very computationally expensive. Thus, I'm prepared to choose this as the 
+final model.
